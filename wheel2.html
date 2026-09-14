@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Лента фортуны</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body {
+    width:100%; height:100vh; overflow:hidden;
+    background:#111; color:#fff;
+    font-family:-apple-system, Arial, sans-serif;
+    user-select:none; -webkit-user-select:none;
+  }
+  #app {
+    width:100%; height:100vh;
+    display:flex; flex-direction:column;
+    justify-content:space-between; align-items:center;
+    padding: 10px 0;
+  }
+  #result {
+    font-size: clamp(24px, 8vh, 72px);
+    font-weight: 800;
+    height: 15vh; min-height: 60px;
+    display:flex; align-items:center; justify-content:center;
+    letter-spacing:1px;
+    flex-shrink: 0;
+  }
+  #result.win { color:#ffd700; text-shadow:0 0 24px rgba(255,215,0,.8); }
+  #canvasWrap {
+    flex: 1 1 auto;
+    width: 100%;
+    display:flex; align-items:center; justify-content:center;
+    min-height: 0;
+  }
+  canvas { display:block; touch-action:manipulation; }
+  #btn {
+    width:80vw; max-width:480px;
+    height: 10vh; min-height: 60px; max-height: 90px;
+    font-size: clamp(18px, 3vh, 28px); font-weight:800;
+    border:0; border-radius:100px;
+    background:linear-gradient(180deg, #ff5a4d, #d32f2f);
+    color:#fff; cursor:pointer;
+    box-shadow:0 6px 0 #8b1a1a, 0 8px 24px rgba(0,0,0,.5);
+    transition:transform .08s, box-shadow .08s;
+    flex-shrink: 0;
+    margin-top: 10px;
+  }
+  #btn:active:not(:disabled) {
+    transform:translateY(4px);
+    box-shadow:0 2px 0 #8b1a1a, 0 4px 12px rgba(0,0,0,.5);
+  }
+  #btn:disabled { opacity:.7; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="result">Нажми «Крутить»</div>
+  <div id="canvasWrap"><canvas id="tape"></canvas></div>
+  <button id="btn">КРУТИТЬ</button>
+</div>
+
+<script>
+const canvas = document.getElementById('tape');
+const ctx    = canvas.getContext('2d');
+const btn    = document.getElementById('btn');
+const result = document.getElementById('result');
+
+const numbers = Array.from({length: 48}, (_, i) => i + 1);
+const N       = numbers.length;
+const START_SPEED = 2600;
+const DECEL       = 900;
+
+let W, H, dpr, slotW, tapeY, tapeH, canvasH;
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  const wrap = document.getElementById('canvasWrap');
+  W = wrap.clientWidth;
+  canvasH = wrap.clientHeight;
+  canvas.style.width  = W + 'px';
+  canvas.style.height = canvasH + 'px';
+  canvas.width  = W * dpr;
+  canvas.height = canvasH * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  // лента занимает ~55% высоты обёртки, но не больше ширины/2
+  tapeH = Math.min(canvasH * 0.55, W * 0.5);
+  tapeY = canvasH / 2 - tapeH / 2;
+  slotW = tapeH * 0.9;
+
+  H = canvasH;
+}
+window.addEventListener('resize', resize);
+
+let offset = 0, speed = 0;
+let state = 'idle';
+let winnerIndex = -1;
+let lastTime = performance.now();
+
+let audioCtx = null, lastTickSlot = null;
+function initAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+function playTick() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type='square';
+  o.frequency.setValueAtTime(1200, t);
+  o.frequency.exponentialRampToValueAtTime(600, t+0.04);
+  g.gain.setValueAtTime(0.08, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t+0.05);
+  o.connect(g).connect(audioCtx.destination);
+  o.start(t); o.stop(t+0.06);
+}
+function playDing() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  [880,1320,1760].forEach((f,i)=>{
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.type='sine';
+    o.frequency.setValueAtTime(f, t+i*0.02);
+    g.gain.setValueAtTime(0.001, t+i*0.02);
+    g.gain.exponentialRampToValueAtTime(0.15, t+i*0.02+0.01);
+    g.gain.exponentialRampToValueAtTime(0.001, t+i*0.02+0.8);
+    o.connect(g).connect(audioCtx.destination);
+    o.start(t+i*0.02); o.stop(t+i*0.02+0.9);
+  });
+}
+function playWhoosh() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type='sawtooth';
+  o.frequency.setValueAtTime(200, t);
+  o.frequency.exponentialRampToValueAtTime(900, t+0.25);
+  g.gain.setValueAtTime(0.001, t);
+  g.gain.exponentialRampToValueAtTime(0.12, t+0.1);
+  g.gain.exponentialRampToValueAtTime(0.001, t+0.3);
+  o.connect(g).connect(audioCtx.destination);
+  o.start(t); o.stop(t+0.35);
+}
+
+function getWinnerIndex() {
+  const center = W / 2;
+  const raw = (center + offset - slotW / 2) / slotW;
+  const idx = Math.round(raw);
+  return ((idx % N) + N) % N;
+}
+function tickIfNeeded() {
+  const idx = getWinnerIndex();
+  if (idx !== lastTickSlot) { lastTickSlot = idx; playTick(); }
+}
+
+function drawTape() {
+  ctx.clearRect(0, 0, W, canvasH);
+  const fontSize = Math.max(16, tapeH * 0.45);
+
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(0, tapeY, W, tapeH);
+
+  const visibleSlots = Math.ceil(W / slotW) + 4;
+  const startIdx = Math.floor((offset - slotW) / slotW);
+
+  for (let k = -2; k < visibleSlots; k++) {
+    const idx  = ((startIdx + k) % N + N) % N;
+    const x    = (startIdx + k) * slotW + slotW / 2 - offset;
+    if (x < -slotW || x > W + slotW) continue;
+    const isWinner = (state === 'idle' && idx === winnerIndex);
+
+    ctx.fillStyle = `hsl(${(idx*360/N+10)%360}, 70%, ${isWinner ? 65 : 45}%)`;
+    ctx.fillRect(x - slotW/2 + 2, tapeY + 4, slotW - 4, tapeH - 8);
+
+    if (isWinner) {
+      ctx.strokeStyle='#fff'; ctx.lineWidth=4;
+      ctx.shadowColor='#fff'; ctx.shadowBlur=20;
+      ctx.strokeRect(x - slotW/2 + 2, tapeY + 4, slotW - 4, tapeH - 8);
+      ctx.shadowBlur=0;
+    }
+
+    ctx.fillStyle='#fff';
+    ctx.font=`bold ${fontSize}px Arial`;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.shadowColor='rgba(0,0,0,.7)'; ctx.shadowBlur=4;
+    ctx.fillText(numbers[idx], x, tapeY + tapeH/2);
+    ctx.shadowBlur=0;
+  }
+
+  const gradL = ctx.createLinearGradient(0, 0, W*0.15, 0);
+  gradL.addColorStop(0,'rgba(17,17,17,1)');
+  gradL.addColorStop(1,'rgba(17,17,17,0)');
+  ctx.fillStyle=gradL;
+  ctx.fillRect(0, tapeY, W*0.15, tapeH);
+
+  const gradR = ctx.createLinearGradient(W, 0, W*0.85, 0);
+  gradR.addColorStop(0,'rgba(17,17,17,1)');
+  gradR.addColorStop(1,'rgba(17,17,17,0)');
+  ctx.fillStyle=gradR;
+  ctx.fillRect(W*0.85, tapeY, W*0.15, tapeH);
+
+  ctx.strokeStyle='#444'; ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.moveTo(0, tapeY); ctx.lineTo(W, tapeY);
+  ctx.moveTo(0, tapeY+tapeH); ctx.lineTo(W, tapeY+tapeH);
+  ctx.stroke();
+
+  const arrowW = tapeH*0.14, arrowH = tapeH*0.22;
+  ctx.beginPath();
+  ctx.moveTo(W/2, tapeY + arrowH);
+  ctx.lineTo(W/2 - arrowW, tapeY - arrowH*0.3);
+  ctx.lineTo(W/2 + arrowW, tapeY - arrowH*0.3);
+  ctx.closePath();
+  ctx.fillStyle='#ffd700'; ctx.shadowColor='#ffd700'; ctx.shadowBlur=12;
+  ctx.fill(); ctx.shadowBlur=0;
+
+  ctx.beginPath();
+  ctx.moveTo(W/2, tapeY + tapeH - arrowH);
+  ctx.lineTo(W/2 - arrowW, tapeY + tapeH + arrowH*0.3);
+  ctx.lineTo(W/2 + arrowW, tapeY + tapeH + arrowH*0.3);
+  ctx.closePath();
+  ctx.fillStyle='#ffd700'; ctx.shadowColor='#ffd700'; ctx.shadowBlur=12;
+  ctx.fill(); ctx.shadowBlur=0;
+}
+
+function animate(now) {
+  const dt = Math.min((now - lastTime) / 1000, 0.05);
+  lastTime = now;
+
+  if (state === 'spinning') {
+    offset += speed * dt;
+    tickIfNeeded();
+  } else if (state === 'decelerating') {
+    speed -= DECEL * dt;
+    if (speed <= 0) {
+      speed = 0; state = 'idle';
+      const center = W/2;
+      const rawIdx = (center + offset - slotW/2) / slotW;
+      const snapped = Math.round(rawIdx);
+      offset = snapped * slotW + slotW/2 - center;
+      winnerIndex = ((snapped % N) + N) % N;
+      result.textContent = numbers[winnerIndex];
+      result.classList.add('win');
+      btn.textContent = 'КРУТИТЬ';
+      btn.disabled = false;
+      playDing();
+    } else {
+      offset += speed * dt;
+      tickIfNeeded();
+    }
+  }
+  drawTape();
+  requestAnimationFrame(animate);
+}
+
+function startStop() {
+  initAudio();
+  if (state === 'idle') {
+    winnerIndex = -1;
+    result.classList.remove('win');
+    offset += Math.random() * slotW * N;
+    speed = START_SPEED;
+    state = 'spinning';
+    lastTickSlot = null;
+    result.textContent = '...';
+    btn.textContent = 'СТОП';
+    playWhoosh();
+  } else if (state === 'spinning') {
+    state = 'decelerating';
+    btn.textContent = 'ТОРМОЗИТ...';
+    btn.disabled = true;
+  }
+}
+
+btn.addEventListener('click', startStop);
+canvas.addEventListener('click', startStop);
+
+resize();
+requestAnimationFrame(animate);
+</script>
+</body>
+</html>
