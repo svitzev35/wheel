@@ -112,19 +112,20 @@ const resultEl   = document.getElementById('result');
 // ─── настройки ─────────────────────────────────────────────
 const NUMBERS     = Array.from({length: 12}, (_, i) => i + 1);
 const N           = NUMBERS.length;
-const RING_R      = 3.2;                    // радиус кольца
-const TUBE        = 0.55;                   // толщина кольца
-const START_SPEED = 12;                     // рад/сек
-const DECEL       = 3.6;                    // рад/сек²
+const RING_R      = 3.0;      // радиус кольца
+const TUBE        = 0.42;     // толщина кольца
+const START_SPEED = 12;       // рад/сек
+const DECEL       = 3.6;      // рад/сек²
 
 // ─── Three.js ──────────────────────────────────────────────
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x111111);
 
-let W = canvasWrap.clientWidth, H = canvasWrap.clientHeight;
+let W = canvasWrap.clientWidth || window.innerWidth;
+let H = canvasWrap.clientHeight || window.innerHeight;
 
 const camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 100);
-camera.position.set(0, 0, 10.5);
+camera.position.set(0, 0, 10);
 camera.lookAt(0, 0, 0);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -132,9 +133,8 @@ renderer.setSize(W, H);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 canvasWrap.appendChild(renderer.domElement);
 
-// лёгкий наклон всей сцены — чтобы было видно 3D-объём
+// ─── сцена БЕЗ наклона — кольцо строго вертикально ────────
 const rootGroup = new THREE.Group();
-rootGroup.rotation.x = -0.12;
 scene.add(rootGroup);
 
 const wheelGroup = new THREE.Group();   // вращающаяся часть
@@ -173,12 +173,12 @@ function makeTexture(num, hue, highlight) {
 }
 
 // ─── карточки с числами ───────────────────────────────────
-const SPRITE_W = 1.55;
-const SPRITE_H = 0.95;
+const SPRITE_W = 1.35;
+const SPRITE_H = 0.85;
 const sprites  = [];
 
 for (let i = 0; i < N; i++) {
-  const a   = i * 2 * Math.PI / N;      // угол от верхней точки (по часовой)
+  const a   = i * 2 * Math.PI / N;
   const hue = (i * 360 / N + 10) % 360;
 
   const texNorm = makeTexture(NUMBERS[i], hue, false);
@@ -188,9 +188,8 @@ for (let i = 0; i < N; i++) {
   const mat = new THREE.MeshBasicMaterial({ map: texNorm, transparent: true });
   const mesh = new THREE.Mesh(geo, mat);
 
-  // позиция на окружности: a=0 → верх, далее по часовой
-  mesh.position.set(RING_R * Math.sin(a), RING_R * Math.cos(a), 0.32);
-  // радиальная ориентация — "низ" к центру, "верх" наружу
+  // позиция на окружности: a=0 → верх, дальше по часовой
+  mesh.position.set(RING_R * Math.sin(a), RING_R * Math.cos(a), 0.75);
   mesh.rotation.z = -a;
 
   wheelGroup.add(mesh);
@@ -203,16 +202,13 @@ const torusMat = new THREE.MeshBasicMaterial({ color: 0x1a1a1a });
 const torus    = new THREE.Mesh(torusGeo, torusMat);
 rootGroup.add(torus);
 
-// внешний тонкий обод
-const rimGeo = new THREE.TorusGeometry(RING_R + TUBE + 0.06, 0.06, 8, 96);
-const rimMat = new THREE.MeshBasicMaterial({ color: 0x666666 });
-const rimOuter = new THREE.Mesh(rimGeo, rimMat);
-rootGroup.add(rimOuter);
+// внешний и внутренний тонкие ободы
+const rimGeoOut = new THREE.TorusGeometry(RING_R + TUBE + 0.06, 0.05, 8, 96);
+const rimMat    = new THREE.MeshBasicMaterial({ color: 0x666666 });
+rootGroup.add(new THREE.Mesh(rimGeoOut, rimMat));
 
-// внутренний обод
-const rimInGeo = new THREE.TorusGeometry(RING_R - TUBE - 0.06, 0.06, 8, 96);
-const rimInner = new THREE.Mesh(rimInGeo, rimMat);
-rootGroup.add(rimInner);
+const rimGeoIn = new THREE.TorusGeometry(RING_R - TUBE - 0.06, 0.05, 8, 96);
+rootGroup.add(new THREE.Mesh(rimGeoIn, rimMat));
 
 // ─── разделители между числами ────────────────────────────
 for (let i = 0; i < N; i++) {
@@ -223,14 +219,17 @@ for (let i = 0; i < N; i++) {
   const y2 = (RING_R + TUBE) * Math.cos(a);
 
   const geo = new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(x1, y1, 0.30),
-    new THREE.Vector3(x2, y2, 0.30)
+    new THREE.Vector3(x1, y1, 0.73),
+    new THREE.Vector3(x2, y2, 0.73)
   ]);
-  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x000000, transparent:true, opacity:0.35 }));
+  const line = new THREE.Line(
+    geo,
+    new THREE.LineBasicMaterial({ color: 0x000000, transparent:true, opacity:0.35 })
+  );
   rootGroup.add(line);
 }
 
-// ─── центральная втулка ──────────────────────────────────
+// ─── центральная втулка (пустая зона внутри) ──────────────
 const hubGeo = new THREE.CircleGeometry(RING_R - TUBE - 0.25, 64);
 const hubMat = new THREE.MeshBasicMaterial({ color: 0x0a0a0a });
 const hub    = new THREE.Mesh(hubGeo, hubMat);
@@ -251,7 +250,7 @@ arrowShape.closePath();
 const arrowGeo = new THREE.ShapeGeometry(arrowShape);
 const arrowMat = new THREE.MeshBasicMaterial({ color: 0xffd700 });
 const arrow    = new THREE.Mesh(arrowGeo, arrowMat);
-arrow.position.set(0, RING_R + TUBE + 0.55, 0.6);
+arrow.position.set(0, RING_R + TUBE + 0.55, 0.9);
 rootGroup.add(arrow);
 
 // свечение вокруг стрелки
@@ -378,7 +377,6 @@ function animate(now) {
       speed = 0;
       state = 'idle';
 
-      // доводим до ближайшего числа
       const raw = rotation * N / (2 * Math.PI);
       const snapped = Math.round(raw);
       rotation = snapped * 2 * Math.PI / N;
@@ -400,7 +398,6 @@ function animate(now) {
 
   wheelGroup.rotation.z = rotation;
 
-  // пульс свечения
   const t = now / 1000;
   glow.scale.setScalar(1 + Math.sin(t * 3) * 0.1);
   glowMat.opacity = 0.10 + Math.sin(t * 3) * 0.04;
