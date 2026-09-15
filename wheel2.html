@@ -3,40 +3,77 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>Лента фортуны</title>
+<title>Кольцо фортуны 3D</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   html, body {
-    width:100%; height:100vh; overflow:hidden;
+    width:100%;
+    height: 100vh;
+    height: 100dvh;
+    overflow:hidden;
     background:#111; color:#fff;
     font-family:-apple-system, Arial, sans-serif;
     user-select:none; -webkit-user-select:none;
   }
   #app {
-    width:100%; height:100vh;
+    width:100%;
+    height: 100vh;
+    height: 100dvh;
     display:flex; flex-direction:column;
     justify-content:space-between; align-items:center;
-    padding: 10px 0;
+    padding: 10px 0 max(10px, env(safe-area-inset-bottom));
   }
   #result {
     font-size: clamp(24px, 8vh, 72px);
     font-weight: 800;
-    height: 15vh; min-height: 60px;
+    height: 13vh; min-height: 60px;
     display:flex; align-items:center; justify-content:center;
     letter-spacing:1px;
     flex-shrink: 0;
   }
   #result.win { color:#ffd700; text-shadow:0 0 24px rgba(255,215,0,.8); }
+  #history {
+    height: 7vh; min-height: 40px;
+    display: flex; align-items: center; justify-content: center;
+    gap: 8px;
+    padding: 0 12px;
+    flex-shrink: 0;
+    font-size: clamp(12px, 2vh, 16px);
+    color: #888;
+  }
+  #historyLabel { flex-shrink: 0; }
+  #historyList { display: flex; gap: 6px; overflow: hidden; max-width: 70vw; }
+  .hist-item {
+    display: flex; align-items: center; justify-content: center;
+    min-width: 32px; height: 32px;
+    padding: 0 8px;
+    border-radius: 8px;
+    background: #222;
+    color: #fff;
+    font-weight: 700;
+    font-size: clamp(12px, 2vh, 16px);
+    animation: histIn .3s ease-out;
+  }
+  .hist-item.latest {
+    background: linear-gradient(180deg, #ffd700, #d4a000);
+    color: #111;
+    box-shadow: 0 0 12px rgba(255,215,0,.6);
+  }
+  @keyframes histIn {
+    from { transform: scale(0.5); opacity: 0; }
+    to   { transform: scale(1);   opacity: 1; }
+  }
   #canvasWrap {
     flex: 1 1 auto;
     width: 100%;
     display:flex; align-items:center; justify-content:center;
     min-height: 0;
+    overflow: hidden;
   }
   canvas { display:block; touch-action:manipulation; }
   #btn {
     width:80vw; max-width:480px;
-    height: 10vh; min-height: 60px; max-height: 90px;
+    height: 8vh; min-height: 56px; max-height: 80px;
     font-size: clamp(18px, 3vh, 28px); font-weight:800;
     border:0; border-radius:100px;
     background:linear-gradient(180deg, #ff5a4d, #d32f2f);
@@ -45,6 +82,7 @@
     transition:transform .08s, box-shadow .08s;
     flex-shrink: 0;
     margin-top: 10px;
+    z-index: 10;
   }
   #btn:active:not(:disabled) {
     transform:translateY(4px);
@@ -56,48 +94,182 @@
 <body>
 <div id="app">
   <div id="result">Нажми «Крутить»</div>
-  <div id="canvasWrap"><canvas id="tape"></canvas></div>
+  <div id="history">
+    <span id="historyLabel">История:</span>
+    <div id="historyList"></div>
+  </div>
+  <div id="canvasWrap"></div>
   <button id="btn">КРУТИТЬ</button>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const canvas = document.getElementById('tape');
-const ctx    = canvas.getContext('2d');
-const btn    = document.getElementById('btn');
-const result = document.getElementById('result');
+// ─── DOM ───────────────────────────────────────────────────
+const canvasWrap = document.getElementById('canvasWrap');
+const btn        = document.getElementById('btn');
+const resultEl   = document.getElementById('result');
 
-const numbers = Array.from({length: 48}, (_, i) => i + 1);
-const N       = numbers.length;
-const START_SPEED = 2600;
-const DECEL       = 900;
+// ─── настройки ─────────────────────────────────────────────
+const NUMBERS     = Array.from({length: 12}, (_, i) => i + 1);
+const N           = NUMBERS.length;
+const RING_R      = 3.2;                    // радиус кольца
+const TUBE        = 0.55;                   // толщина кольца
+const START_SPEED = 12;                     // рад/сек
+const DECEL       = 3.6;                    // рад/сек²
 
-let W, H, dpr, slotW, tapeY, tapeH, canvasH;
-function resize() {
-  dpr = window.devicePixelRatio || 1;
-  const wrap = document.getElementById('canvasWrap');
-  W = wrap.clientWidth;
-  canvasH = wrap.clientHeight;
-  canvas.style.width  = W + 'px';
-  canvas.style.height = canvasH + 'px';
-  canvas.width  = W * dpr;
-  canvas.height = canvasH * dpr;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+// ─── Three.js ──────────────────────────────────────────────
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x111111);
 
-  // лента занимает ~55% высоты обёртки, но не больше ширины/2
-  tapeH = Math.min(canvasH * 0.55, W * 0.5);
-  tapeY = canvasH / 2 - tapeH / 2;
-  slotW = tapeH * 0.9;
+let W = canvasWrap.clientWidth, H = canvasWrap.clientHeight;
 
-  H = canvasH;
+const camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 100);
+camera.position.set(0, 0, 10.5);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(W, H);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+canvasWrap.appendChild(renderer.domElement);
+
+// лёгкий наклон всей сцены — чтобы было видно 3D-объём
+const rootGroup = new THREE.Group();
+rootGroup.rotation.x = -0.12;
+scene.add(rootGroup);
+
+const wheelGroup = new THREE.Group();   // вращающаяся часть
+rootGroup.add(wheelGroup);
+
+// ─── текстура числа ───────────────────────────────────────
+function makeTexture(num, hue, highlight) {
+  const c = document.createElement('canvas');
+  c.width = 320; c.height = 200;
+  const g = c.getContext('2d');
+
+  const bg = highlight
+    ? `hsl(${hue}, 95%, 60%)`
+    : `hsl(${hue}, 65%, 42%)`;
+  g.fillStyle = bg;
+  g.fillRect(0, 0, 320, 200);
+
+  if (highlight) {
+    g.strokeStyle = '#fff';
+    g.lineWidth = 12;
+    g.strokeRect(8, 8, 304, 184);
+  }
+
+  g.fillStyle = '#fff';
+  g.font = 'bold 130px Arial, sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.shadowColor = 'rgba(0,0,0,.6)';
+  g.shadowBlur = 8;
+  g.fillText(String(num), 160, 106);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.anisotropy = 4;
+  tex.minFilter = THREE.LinearFilter;
+  return tex;
 }
-window.addEventListener('resize', resize);
 
-let offset = 0, speed = 0;
-let state = 'idle';
-let winnerIndex = -1;
-let lastTime = performance.now();
+// ─── карточки с числами ───────────────────────────────────
+const SPRITE_W = 1.55;
+const SPRITE_H = 0.95;
+const sprites  = [];
 
-let audioCtx = null, lastTickSlot = null;
+for (let i = 0; i < N; i++) {
+  const a   = i * 2 * Math.PI / N;      // угол от верхней точки (по часовой)
+  const hue = (i * 360 / N + 10) % 360;
+
+  const texNorm = makeTexture(NUMBERS[i], hue, false);
+  const texWin  = makeTexture(NUMBERS[i], hue, true);
+
+  const geo = new THREE.PlaneGeometry(SPRITE_W, SPRITE_H);
+  const mat = new THREE.MeshBasicMaterial({ map: texNorm, transparent: true });
+  const mesh = new THREE.Mesh(geo, mat);
+
+  // позиция на окружности: a=0 → верх, далее по часовой
+  mesh.position.set(RING_R * Math.sin(a), RING_R * Math.cos(a), 0.32);
+  // радиальная ориентация — "низ" к центру, "верх" наружу
+  mesh.rotation.z = -a;
+
+  wheelGroup.add(mesh);
+  sprites.push({ mesh, mat, texNorm, texWin, num: NUMBERS[i] });
+}
+
+// ─── тело кольца (тор) ────────────────────────────────────
+const torusGeo = new THREE.TorusGeometry(RING_R, TUBE, 12, 96);
+const torusMat = new THREE.MeshBasicMaterial({ color: 0x1a1a1a });
+const torus    = new THREE.Mesh(torusGeo, torusMat);
+rootGroup.add(torus);
+
+// внешний тонкий обод
+const rimGeo = new THREE.TorusGeometry(RING_R + TUBE + 0.06, 0.06, 8, 96);
+const rimMat = new THREE.MeshBasicMaterial({ color: 0x666666 });
+const rimOuter = new THREE.Mesh(rimGeo, rimMat);
+rootGroup.add(rimOuter);
+
+// внутренний обод
+const rimInGeo = new THREE.TorusGeometry(RING_R - TUBE - 0.06, 0.06, 8, 96);
+const rimInner = new THREE.Mesh(rimInGeo, rimMat);
+rootGroup.add(rimInner);
+
+// ─── разделители между числами ────────────────────────────
+for (let i = 0; i < N; i++) {
+  const a = (i + 0.5) * 2 * Math.PI / N;
+  const x1 = (RING_R - TUBE) * Math.sin(a);
+  const y1 = (RING_R - TUBE) * Math.cos(a);
+  const x2 = (RING_R + TUBE) * Math.sin(a);
+  const y2 = (RING_R + TUBE) * Math.cos(a);
+
+  const geo = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(x1, y1, 0.30),
+    new THREE.Vector3(x2, y2, 0.30)
+  ]);
+  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x000000, transparent:true, opacity:0.35 }));
+  rootGroup.add(line);
+}
+
+// ─── центральная втулка ──────────────────────────────────
+const hubGeo = new THREE.CircleGeometry(RING_R - TUBE - 0.25, 64);
+const hubMat = new THREE.MeshBasicMaterial({ color: 0x0a0a0a });
+const hub    = new THREE.Mesh(hubGeo, hubMat);
+hub.position.z = 0.05;
+rootGroup.add(hub);
+
+const hubRingGeo = new THREE.TorusGeometry(RING_R - TUBE - 0.25, 0.05, 8, 64);
+const hubRing = new THREE.Mesh(hubRingGeo, new THREE.MeshBasicMaterial({ color: 0x333333 }));
+rootGroup.add(hubRing);
+
+// ─── стрелка сверху ──────────────────────────────────────
+const arrowShape = new THREE.Shape();
+arrowShape.moveTo(0, -0.55);
+arrowShape.lineTo(0.4,  0.3);
+arrowShape.lineTo(-0.4, 0.3);
+arrowShape.closePath();
+
+const arrowGeo = new THREE.ShapeGeometry(arrowShape);
+const arrowMat = new THREE.MeshBasicMaterial({ color: 0xffd700 });
+const arrow    = new THREE.Mesh(arrowGeo, arrowMat);
+arrow.position.set(0, RING_R + TUBE + 0.55, 0.6);
+rootGroup.add(arrow);
+
+// свечение вокруг стрелки
+const glowShape = new THREE.Shape();
+glowShape.absarc(0, 0, 0.9, 0, Math.PI * 2, false);
+const glowGeo = new THREE.ShapeGeometry(glowShape);
+const glowMat = new THREE.MeshBasicMaterial({
+  color: 0xffd700, transparent: true, opacity: 0.12
+});
+const glow = new THREE.Mesh(glowGeo, glowMat);
+glow.position.copy(arrow.position);
+glow.position.z -= 0.1;
+rootGroup.add(glow);
+
+// ─── звук ──────────────────────────────────────────────────
+let audioCtx = null;
+let lastTickSlot = null;
+
 function initAudio() {
   if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   if (audioCtx.state === 'suspended') audioCtx.resume();
@@ -106,163 +278,149 @@ function playTick() {
   if (!audioCtx) return;
   const t = audioCtx.currentTime;
   const o = audioCtx.createOscillator(), g = audioCtx.createGain();
-  o.type='square';
+  o.type = 'square';
   o.frequency.setValueAtTime(1200, t);
-  o.frequency.exponentialRampToValueAtTime(600, t+0.04);
-  g.gain.setValueAtTime(0.08, t);
-  g.gain.exponentialRampToValueAtTime(0.001, t+0.05);
+  o.frequency.exponentialRampToValueAtTime(600, t + 0.04);
+  g.gain.setValueAtTime(0.07, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
   o.connect(g).connect(audioCtx.destination);
-  o.start(t); o.stop(t+0.06);
+  o.start(t); o.stop(t + 0.06);
 }
 function playDing() {
   if (!audioCtx) return;
   const t = audioCtx.currentTime;
-  [880,1320,1760].forEach((f,i)=>{
+  [880, 1320, 1760].forEach((f, i) => {
     const o = audioCtx.createOscillator(), g = audioCtx.createGain();
-    o.type='sine';
-    o.frequency.setValueAtTime(f, t+i*0.02);
-    g.gain.setValueAtTime(0.001, t+i*0.02);
-    g.gain.exponentialRampToValueAtTime(0.15, t+i*0.02+0.01);
-    g.gain.exponentialRampToValueAtTime(0.001, t+i*0.02+0.8);
+    o.type = 'sine';
+    o.frequency.setValueAtTime(f, t + i * 0.02);
+    g.gain.setValueAtTime(0.001, t + i * 0.02);
+    g.gain.exponentialRampToValueAtTime(0.15, t + i * 0.02 + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.001, t + i * 0.02 + 0.8);
     o.connect(g).connect(audioCtx.destination);
-    o.start(t+i*0.02); o.stop(t+i*0.02+0.9);
+    o.start(t + i * 0.02); o.stop(t + i * 0.02 + 0.9);
   });
 }
 function playWhoosh() {
   if (!audioCtx) return;
   const t = audioCtx.currentTime;
   const o = audioCtx.createOscillator(), g = audioCtx.createGain();
-  o.type='sawtooth';
+  o.type = 'sawtooth';
   o.frequency.setValueAtTime(200, t);
-  o.frequency.exponentialRampToValueAtTime(900, t+0.25);
+  o.frequency.exponentialRampToValueAtTime(900, t + 0.25);
   g.gain.setValueAtTime(0.001, t);
-  g.gain.exponentialRampToValueAtTime(0.12, t+0.1);
-  g.gain.exponentialRampToValueAtTime(0.001, t+0.3);
+  g.gain.exponentialRampToValueAtTime(0.11, t + 0.1);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
   o.connect(g).connect(audioCtx.destination);
-  o.start(t); o.stop(t+0.35);
+  o.start(t); o.stop(t + 0.35);
 }
 
-function getWinnerIndex() {
-  const center = W / 2;
-  const raw = (center + offset - slotW / 2) / slotW;
+// ─── история ───────────────────────────────────────────────
+const historyArr = [];
+const HISTORY_MAX = 8;
+const historyEl = document.getElementById('historyList');
+
+function pushHistory(num) {
+  historyArr.push(num);
+  if (historyArr.length > HISTORY_MAX) historyArr.shift();
+  renderHistory();
+}
+function renderHistory() {
+  historyEl.innerHTML = '';
+  historyArr.forEach((n, i) => {
+    const chip = document.createElement('div');
+    chip.className = 'hist-item' + (i === historyArr.length - 1 ? ' latest' : '');
+    chip.textContent = n;
+    historyEl.appendChild(chip);
+  });
+}
+
+// ─── состояние ─────────────────────────────────────────────
+let rotation = 0;
+let speed = 0;
+let state = 'idle';
+let winnerIdx = -1;
+let lastTime = performance.now();
+
+// индекс числа под стрелкой (a_i = rot)
+function getWinnerIdx() {
+  const raw = rotation * N / (2 * Math.PI);
   const idx = Math.round(raw);
   return ((idx % N) + N) % N;
 }
 function tickIfNeeded() {
-  const idx = getWinnerIndex();
-  if (idx !== lastTickSlot) { lastTickSlot = idx; playTick(); }
-}
-
-function drawTape() {
-  ctx.clearRect(0, 0, W, canvasH);
-  const fontSize = Math.max(16, tapeH * 0.45);
-
-  ctx.fillStyle = '#1a1a1a';
-  ctx.fillRect(0, tapeY, W, tapeH);
-
-  const visibleSlots = Math.ceil(W / slotW) + 4;
-  const startIdx = Math.floor((offset - slotW) / slotW);
-
-  for (let k = -2; k < visibleSlots; k++) {
-    const idx  = ((startIdx + k) % N + N) % N;
-    const x    = (startIdx + k) * slotW + slotW / 2 - offset;
-    if (x < -slotW || x > W + slotW) continue;
-    const isWinner = (state === 'idle' && idx === winnerIndex);
-
-    ctx.fillStyle = `hsl(${(idx*360/N+10)%360}, 70%, ${isWinner ? 65 : 45}%)`;
-    ctx.fillRect(x - slotW/2 + 2, tapeY + 4, slotW - 4, tapeH - 8);
-
-    if (isWinner) {
-      ctx.strokeStyle='#fff'; ctx.lineWidth=4;
-      ctx.shadowColor='#fff'; ctx.shadowBlur=20;
-      ctx.strokeRect(x - slotW/2 + 2, tapeY + 4, slotW - 4, tapeH - 8);
-      ctx.shadowBlur=0;
-    }
-
-    ctx.fillStyle='#fff';
-    ctx.font=`bold ${fontSize}px Arial`;
-    ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.shadowColor='rgba(0,0,0,.7)'; ctx.shadowBlur=4;
-    ctx.fillText(numbers[idx], x, tapeY + tapeH/2);
-    ctx.shadowBlur=0;
+  const idx = getWinnerIdx();
+  if (idx !== lastTickSlot) {
+    lastTickSlot = idx;
+    playTick();
   }
-
-  const gradL = ctx.createLinearGradient(0, 0, W*0.15, 0);
-  gradL.addColorStop(0,'rgba(17,17,17,1)');
-  gradL.addColorStop(1,'rgba(17,17,17,0)');
-  ctx.fillStyle=gradL;
-  ctx.fillRect(0, tapeY, W*0.15, tapeH);
-
-  const gradR = ctx.createLinearGradient(W, 0, W*0.85, 0);
-  gradR.addColorStop(0,'rgba(17,17,17,1)');
-  gradR.addColorStop(1,'rgba(17,17,17,0)');
-  ctx.fillStyle=gradR;
-  ctx.fillRect(W*0.85, tapeY, W*0.15, tapeH);
-
-  ctx.strokeStyle='#444'; ctx.lineWidth=2;
-  ctx.beginPath();
-  ctx.moveTo(0, tapeY); ctx.lineTo(W, tapeY);
-  ctx.moveTo(0, tapeY+tapeH); ctx.lineTo(W, tapeY+tapeH);
-  ctx.stroke();
-
-  const arrowW = tapeH*0.14, arrowH = tapeH*0.22;
-  ctx.beginPath();
-  ctx.moveTo(W/2, tapeY + arrowH);
-  ctx.lineTo(W/2 - arrowW, tapeY - arrowH*0.3);
-  ctx.lineTo(W/2 + arrowW, tapeY - arrowH*0.3);
-  ctx.closePath();
-  ctx.fillStyle='#ffd700'; ctx.shadowColor='#ffd700'; ctx.shadowBlur=12;
-  ctx.fill(); ctx.shadowBlur=0;
-
-  ctx.beginPath();
-  ctx.moveTo(W/2, tapeY + tapeH - arrowH);
-  ctx.lineTo(W/2 - arrowW, tapeY + tapeH + arrowH*0.3);
-  ctx.lineTo(W/2 + arrowW, tapeY + tapeH + arrowH*0.3);
-  ctx.closePath();
-  ctx.fillStyle='#ffd700'; ctx.shadowColor='#ffd700'; ctx.shadowBlur=12;
-  ctx.fill(); ctx.shadowBlur=0;
+}
+function highlightWinner(idx) {
+  sprites.forEach((s, i) => {
+    s.mat.map = (i === idx) ? s.texWin : s.texNorm;
+    s.mat.needsUpdate = true;
+  });
+}
+function clearHighlight() {
+  sprites.forEach(s => { s.mat.map = s.texNorm; s.mat.needsUpdate = true; });
 }
 
+// ─── анимация ──────────────────────────────────────────────
 function animate(now) {
   const dt = Math.min((now - lastTime) / 1000, 0.05);
   lastTime = now;
 
   if (state === 'spinning') {
-    offset += speed * dt;
+    rotation += speed * dt;
     tickIfNeeded();
   } else if (state === 'decelerating') {
     speed -= DECEL * dt;
     if (speed <= 0) {
-      speed = 0; state = 'idle';
-      const center = W/2;
-      const rawIdx = (center + offset - slotW/2) / slotW;
-      const snapped = Math.round(rawIdx);
-      offset = snapped * slotW + slotW/2 - center;
-      winnerIndex = ((snapped % N) + N) % N;
-      result.textContent = numbers[winnerIndex];
-      result.classList.add('win');
+      speed = 0;
+      state = 'idle';
+
+      // доводим до ближайшего числа
+      const raw = rotation * N / (2 * Math.PI);
+      const snapped = Math.round(raw);
+      rotation = snapped * 2 * Math.PI / N;
+
+      winnerIdx = ((snapped % N) + N) % N;
+      resultEl.textContent = sprites[winnerIdx].num;
+      resultEl.classList.add('win');
       btn.textContent = 'КРУТИТЬ';
       btn.disabled = false;
+
+      highlightWinner(winnerIdx);
       playDing();
+      pushHistory(sprites[winnerIdx].num);
     } else {
-      offset += speed * dt;
+      rotation += speed * dt;
       tickIfNeeded();
     }
   }
-  drawTape();
+
+  wheelGroup.rotation.z = rotation;
+
+  // пульс свечения
+  const t = now / 1000;
+  glow.scale.setScalar(1 + Math.sin(t * 3) * 0.1);
+  glowMat.opacity = 0.10 + Math.sin(t * 3) * 0.04;
+
+  renderer.render(scene, camera);
   requestAnimationFrame(animate);
 }
 
+// ─── старт/стоп ────────────────────────────────────────────
 function startStop() {
   initAudio();
   if (state === 'idle') {
-    winnerIndex = -1;
-    result.classList.remove('win');
-    offset += Math.random() * slotW * N;
+    clearHighlight();
+    winnerIdx = -1;
+    resultEl.classList.remove('win');
+    rotation += Math.random() * Math.PI * 2;
     speed = START_SPEED;
     state = 'spinning';
     lastTickSlot = null;
-    result.textContent = '...';
+    resultEl.textContent = '...';
     btn.textContent = 'СТОП';
     playWhoosh();
   } else if (state === 'spinning') {
@@ -273,10 +431,24 @@ function startStop() {
 }
 
 btn.addEventListener('click', startStop);
-canvas.addEventListener('click', startStop);
+canvasWrap.addEventListener('click', startStop);
 
-resize();
-requestAnimationFrame(animate);
+// ─── resize ────────────────────────────────────────────────
+function onResize() {
+  W = canvasWrap.clientWidth;
+  H = canvasWrap.clientHeight;
+  if (W === 0 || H === 0) return;
+  camera.aspect = W / H;
+  camera.updateProjectionMatrix();
+  renderer.setSize(W, H);
+}
+window.addEventListener('resize', onResize);
+window.addEventListener('orientationchange', () => setTimeout(onResize, 200));
+
+requestAnimationFrame(() => {
+  onResize();
+  requestAnimationFrame(animate);
+});
 </script>
 </body>
 </html>
